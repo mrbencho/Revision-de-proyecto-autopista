@@ -2,7 +2,7 @@
 """Genera miniaturas (fotos/) y fotos.json a partir de una carpeta de originales.
 Uso: python actualizar.py "D:\\Vital Impacts 2026\\raws\\Jpegs"
 """
-import sys, os, json
+import sys, os, json, re, unicodedata
 from PIL import Image, ImageOps
 src = sys.argv[1]
 here = os.path.dirname(os.path.abspath(__file__))
@@ -13,7 +13,10 @@ names = sorted(f for f in os.listdir(src) if f.lower().endswith(EXT))
 items = []
 for f in names:
     base = os.path.splitext(f)[0]
-    dst = base + ".jpg"
+    # nombre seguro para la web: sin tildes, sin espacios, sin guion bajo inicial
+    safe = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode()
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", safe).lstrip("_.") or "foto"
+    dst = safe + ".jpg"
     p = os.path.join(out, dst)
     im = Image.open(os.path.join(src, f))
     im = ImageOps.exif_transpose(im).convert("RGB")
