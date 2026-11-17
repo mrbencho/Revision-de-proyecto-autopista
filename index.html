@@ -17,7 +17,7 @@
   #bar button:hover, #bar label.btn:hover { border-color:var(--acc); }
   #bar .sp { flex:1; }
   #count { color:var(--mute); white-space:nowrap; }
-  #view { position:fixed; top:46px; left:0; right:0; bottom:0; overflow:hidden; cursor:grab;
+  #view { touch-action:none; position:fixed; top:46px; left:0; right:0; bottom:0; overflow:hidden; cursor:grab;
     background-image:radial-gradient(#2a2e31 1px, transparent 1px); background-size:32px 32px; }
   #view.panning { cursor:grabbing; }
   #world { position:absolute; left:0; top:0; transform-origin:0 0; }
@@ -36,6 +36,8 @@
     align-items:center; justify-content:center; }
   #lb.on { display:flex; }
   #lb img { max-width:100vw; max-height:100vh; object-fit:contain; }
+  #back { position:absolute; top:max(12px, env(safe-area-inset-top)); left:12px; z-index:2; background:rgba(40,44,48,.85);
+    color:#fff; border:1px solid #555; border-radius:22px; padding:10px 18px; font:600 15px system-ui,sans-serif; cursor:pointer; }
   #lb .t { position:absolute; bottom:14px; left:0; right:0; text-align:center; color:var(--mute); }
   #hint { position:fixed; bottom:10px; left:12px; z-index:900; color:var(--mute); font-size:12px;
     background:rgba(22,24,26,.8); padding:4px 8px; border-radius:6px; pointer-events:none; }
@@ -57,11 +59,11 @@
   <span id="count"></span>
 </div>
 <div id="view"><div id="world"></div></div>
-<div id="hint">Arrastra fotos · rueda: zoom · arrastra el fondo: mover vista · doble clic: ver grande · esquina: cambiar tamaño</div>
-<div id="lb"><img alt=""><div class="t"></div></div>
+<div id="hint">Arrastra fotos · rueda o dos dedos: zoom · arrastra el fondo: mover vista · doble clic o toque: ver grande · esquina: cambiar tamaño</div>
+<div id="lb"><button id="back">← Volver</button><img alt=""><div class="t"></div></div>
 
 <script>
-const KEY = "vital-impacts-layout-v1";
+const KEY = "vital-impacts-layout-v2";
 const view = document.getElementById("view"), world = document.getElementById("world");
 const lb = document.getElementById("lb"), lbImg = lb.querySelector("img"), lbT = lb.querySelector(".t");
 let fotos = [], layout = {}, cam = {x:40, y:40, k:.5}, z = 1, sel = null;
@@ -71,21 +73,22 @@ const applyCam = () => world.style.transform = `translate(${cam.x}px,${cam.y}px)
 
 function defaultSize(f){ const base = 360; return f.w >= f.h ? {w:base, h:Math.round(base*f.h/f.w)} : {w:Math.round(base*f.w/f.h), h:base}; }
 
-function gridLayout(list){
-  const cols = Math.ceil(Math.sqrt(list.length * 1.4)), gap = 24; let x=0, y=0, rowH=0, c=0;
+function gridLayout(list, x0 = 0, y0 = 0, colsFixed = 0){
+  const cols = colsFixed || Math.ceil(Math.sqrt(list.length * 1.4)), gap = 24; let x=x0, y=y0, rowH=0, c=0;
   list.forEach(f => {
     const s = defaultSize(f);
     layout[f.file] = {x, y, w:s.w, h:s.h, z:++z};
     x += s.w + gap; rowH = Math.max(rowH, s.h);
-    if (++c % cols === 0) { x = 0; y += rowH + gap; rowH = 0; }
+    if (++c % cols === 0) { x = x0; y += rowH + gap; rowH = 0; }
   });
 }
 
-function placeNew(f){
-  // fotos nuevas: debajo de todo lo existente
-  let maxY = 0; Object.values(layout).forEach(p => maxY = Math.max(maxY, p.y + p.h));
-  const s = defaultSize(f), n = Object.keys(layout).length;
-  layout[f.file] = {x:(n % 6) * 384, y:maxY + 40, w:s.w, h:s.h, z:++z};
+function placeNew(list){
+  // fotos nuevas: en filas ordenadas, debajo de todo lo existente
+  let maxY = -40, minX = 0;
+  const ps = Object.values(layout);
+  if (ps.length) { maxY = Math.max(...ps.map(p => p.y + p.h)); minX = Math.min(...ps.map(p => p.x)); }
+  gridLayout(list, minX, maxY + 60, 6);
 }
 
 function render(){
@@ -112,10 +115,19 @@ function fit(){
 }
 
 // --- interacción ---
-let drag = null;
+let drag = null, pinch = null;
+const ptrs = new Map();
+const dist2 = () => { const [a,b] = [...ptrs.values()]; return {d:Math.hypot(a.x-b.x, a.y-b.y) || 1, cx:(a.x+b.x)/2, cy:(a.y+b.y)/2}; };
 view.addEventListener("pointerdown", e => {
   const ph = e.target.closest(".ph");
   view.setPointerCapture(e.pointerId);
+  ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  if (ptrs.size === 2) {            // dos dedos: zoom y desplazamiento de la vista
+    const r = view.getBoundingClientRect(), m = dist2();
+    pinch = {d:m.d, mx:m.cx - r.left, my:m.cy - r.top, cam:{...cam}};
+    drag = null; view.classList.remove("panning"); return;
+  }
+  if (ptrs.size > 2) return;
   if (ph) {
     const f = ph.dataset.f, p = layout[f];
     document.querySelectorAll(".ph.sel").forEach(n => n.classList.remove("sel")); ph.classList.add("sel");
@@ -127,6 +139,13 @@ view.addEventListener("pointerdown", e => {
   }
 });
 view.addEventListener("pointermove", e => {
+  if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  if (pinch && ptrs.size >= 2) {
+    const r = view.getBoundingClientRect(), m = dist2(), c = pinch.cam;
+    const nk = Math.min(4, Math.max(.05, c.k * m.d / pinch.d));
+    const wx = (pinch.mx - c.x) / c.k, wy = (pinch.my - c.y) / c.k;   // punto del mundo bajo los dedos
+    cam.k = nk; cam.x = (m.cx - r.left) - wx * nk; cam.y = (m.cy - r.top) - wy * nk; applyCam(); return;
+  }
   if (!drag) return;
   const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
   if (drag.mode === "pan") { cam.x = drag.ox + dx; cam.y = drag.oy + dy; applyCam(); return; }
@@ -135,7 +154,19 @@ view.addEventListener("pointermove", e => {
   else { const w = Math.max(80, drag.ow + dx/cam.k); p.w = Math.round(w); p.h = Math.round(w * drag.oh/drag.ow); }
   drag.ph.style.left = p.x+"px"; drag.ph.style.top = p.y+"px"; drag.ph.style.width = p.w+"px"; drag.ph.style.height = p.h+"px";
 });
-const end = () => { if (drag && drag.mode !== "pan") save(); drag = null; view.classList.remove("panning"); };
+let lastTap = {f:null, t:0};
+const end = e => {
+  if (e) { ptrs.delete(e.pointerId); if (pinch) { if (ptrs.size < 2) pinch = null; drag = null; view.classList.remove("panning"); return; } }
+  if (drag && drag.mode !== "pan") save();
+  // doble clic / doble toque detectado a mano (funciona en PC y en celular)
+  if (drag && drag.mode === "mv" && e && e.type === "pointerup" && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 6) {
+    const now = Date.now();
+    if (e.pointerType === "touch") openLb(drag.f);                       // celular: un toque abre la foto
+    else if (lastTap.f === drag.f && now - lastTap.t < 450) { lastTap = {f:null, t:0}; openLb(drag.f); }  // PC: doble clic
+    else lastTap = {f:drag.f, t:now};
+  }
+  drag = null; view.classList.remove("panning");
+};
 view.addEventListener("pointerup", end); view.addEventListener("pointercancel", end);
 
 view.addEventListener("wheel", e => {
@@ -145,19 +176,28 @@ view.addEventListener("wheel", e => {
   cam.x = mx - (mx - cam.x) * nk/cam.k; cam.y = my - (my - cam.y) * nk/cam.k; cam.k = nk; applyCam();
 }, {passive:false});
 
-view.addEventListener("dblclick", e => {
-  // con pointer capture, e.target apunta al fondo: se busca la foto por posición
-  const el = document.elementFromPoint(e.clientX, e.clientY), ph = el && el.closest(".ph"); if (!ph) return;
-  lbImg.src = ph.querySelector("img").src; lbT.textContent = ph.dataset.f; lb.classList.add("on");
+let lbAt = 0;
+function openLb(f){
+  lbAt = Date.now();
+  lbImg.src = "fotos/" + encodeURIComponent(f); lbT.textContent = f; lb.classList.add("on");
+  history.pushState({lb:1}, "");
   if (lb.requestFullscreen) lb.requestFullscreen().catch(() => {});   // pantalla completa real
-});
+}
 function closeLb(){
+  if (!lb.classList.contains("on")) return;
   lb.classList.remove("on");
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  if (history.state && history.state.lb) history.back();
 }
-lb.addEventListener("click", closeLb);
+// el "click" que genera el propio toque no debe cerrar el visor recién abierto
+lb.addEventListener("click", () => { if (Date.now() - lbAt > 500) closeLb(); });
+document.getElementById("back").addEventListener("click", e => { e.stopPropagation(); if (Date.now() - lbAt > 500) closeLb(); });
+addEventListener("popstate", () => {   // gesto/botón "atrás" del celular cierra el visor
+  lb.classList.remove("on");
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+});
 // ESC en pantalla completa lo maneja el navegador: al salir, cerramos también el visor
-document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement) lb.classList.remove("on"); });
+document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement) closeLb(); });
 addEventListener("keydown", e => { if (e.key === "Escape") closeLb(); });
 
 // --- botones ---
@@ -175,7 +215,7 @@ document.getElementById("bSave").onclick = () => {
 };
 document.getElementById("fImp").onchange = async e => {
   const t = await e.target.files[0].text(); layout = JSON.parse(t);
-  fotos.forEach(f => { if (!layout[f.file]) placeNew(f); }); save(); render(); fit();
+  const nuevas = fotos.filter(f => !layout[f.file]); if (nuevas.length) placeNew(nuevas); save(); render(); fit();
 };
 
 // --- arranque ---
@@ -186,7 +226,10 @@ document.getElementById("fImp").onchange = async e => {
     try { const r = await fetch("layout.json", {cache:"no-cache"}); if (r.ok) layout = await r.json(); } catch(e){}
   }
   if (!layout) { layout = {}; gridLayout(sorted()); }
-  fotos.forEach(f => { if (!layout[f.file]) placeNew(f); });
+  const names = new Set(fotos.map(f => f.file));
+  Object.keys(layout).forEach(k => { if (!names.has(k)) delete layout[k]; });
+  const nuevas = fotos.filter(f => !layout[f.file]);
+  if (nuevas.length) placeNew(nuevas);
   z = Math.max(1, ...Object.values(layout).map(p => p.z || 1));
   save(); render(); fit();
 })();
