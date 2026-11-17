@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vital Impacts · Tablero de fotos</title>
+<style>
+  :root { --bg:#16181a; --bar:#1f2326; --ink:#e8e6e1; --mute:#8d9296; --acc:#d9a441; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; overflow:hidden; background:var(--bg); color:var(--ink);
+    font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  #bar { position:fixed; top:0; left:0; right:0; height:46px; z-index:1000; background:var(--bar);
+    display:flex; align-items:center; gap:8px; padding:0 12px; border-bottom:1px solid #2c3135; }
+  #bar h1 { font-size:14px; font-weight:600; margin:0 10px 0 0; white-space:nowrap; }
+  #bar button, #bar select, #bar label.btn { background:#2a2f33; color:var(--ink); border:1px solid #394045;
+    border-radius:6px; padding:5px 10px; font:inherit; cursor:pointer; }
+  #bar button:hover, #bar label.btn:hover { border-color:var(--acc); }
+  #bar .sp { flex:1; }
+  #count { color:var(--mute); white-space:nowrap; }
+  #view { position:fixed; top:46px; left:0; right:0; bottom:0; overflow:hidden; cursor:grab;
+    background-image:radial-gradient(#2a2e31 1px, transparent 1px); background-size:32px 32px; }
+  #view.panning { cursor:grabbing; }
+  #world { position:absolute; left:0; top:0; transform-origin:0 0; }
+  .ph { position:absolute; background:#000; box-shadow:0 4px 18px rgba(0,0,0,.55); cursor:move;
+    user-select:none; -webkit-user-select:none; }
+  .ph img { width:100%; height:100%; object-fit:cover; display:block; pointer-events:none; }
+  .ph.sel { outline:2px solid var(--acc); }
+  .ph .cap { position:absolute; left:0; right:0; bottom:0; padding:3px 6px; font-size:11px; color:#fff;
+    background:linear-gradient(transparent,rgba(0,0,0,.75)); opacity:0; transition:opacity .15s;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
+  .ph:hover .cap, .ph.sel .cap { opacity:1; }
+  .ph .rz { position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize;
+    background:linear-gradient(135deg,transparent 50%,var(--acc) 50%); opacity:0; }
+  .ph:hover .rz, .ph.sel .rz { opacity:.9; }
+  #lb { position:fixed; inset:0; z-index:2000; background:rgba(0,0,0,.93); display:none;
+    align-items:center; justify-content:center; }
+  #lb.on { display:flex; }
+  #lb img { max-width:96vw; max-height:92vh; object-fit:contain; }
+  #lb .t { position:absolute; bottom:14px; left:0; right:0; text-align:center; color:var(--mute); }
+  #hint { position:fixed; bottom:10px; left:12px; z-index:900; color:var(--mute); font-size:12px;
+    background:rgba(22,24,26,.8); padding:4px 8px; border-radius:6px; pointer-events:none; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <h1>Vital Impacts · fotos</h1>
+  <button id="bGrid" title="Ordenar todas en cuadrícula">Ordenar en cuadrícula</button>
+  <button id="bFit" title="Ajustar vista para ver todas">Ver todas</button>
+  <select id="sSort" title="Orden para la cuadrícula">
+    <option value="name">por nombre</option>
+    <option value="date">por fecha de captura</option>
+  </select>
+  <button id="bSave">Exportar layout</button>
+  <label class="btn">Importar layout<input id="fImp" type="file" accept=".json" hidden></label>
+  <button id="bReset">Reiniciar</button>
+  <span class="sp"></span>
+  <span id="count"></span>
+</div>
+<div id="view"><div id="world"></div></div>
+<div id="hint">Arrastra fotos · rueda: zoom · arrastra el fondo: mover vista · doble clic: ver grande · esquina: cambiar tamaño</div>
+<div id="lb"><img alt=""><div class="t"></div></div>
+
+<script>
+const KEY = "vital-impacts-layout-v1";
+const view = document.getElementById("view"), world = document.getElementById("world");
+const lb = document.getElementById("lb"), lbImg = lb.querySelector("img"), lbT = lb.querySelector(".t");
+let fotos = [], layout = {}, cam = {x:40, y:40, k:.5}, z = 1, sel = null;
+
+const save = () => localStorage.setItem(KEY, JSON.stringify(layout));
+const applyCam = () => world.style.transform = `translate(${cam.x}px,${cam.y}px) scale(${cam.k})`;
+
+function defaultSize(f){ const base = 360; return f.w >= f.h ? {w:base, h:Math.round(base*f.h/f.w)} : {w:Math.round(base*f.w/f.h), h:base}; }
+
+function gridLayout(list){
+  const cols = Math.ceil(Math.sqrt(list.length * 1.4)), gap = 24; let x=0, y=0, rowH=0, c=0;
+  list.forEach(f => {
+    const s = defaultSize(f);
+    layout[f.file] = {x, y, w:s.w, h:s.h, z:++z};
+    x += s.w + gap; rowH = Math.max(rowH, s.h);
+    if (++c % cols === 0) { x = 0; y += rowH + gap; rowH = 0; }
+  });
+}
+
+function placeNew(f){
+  // fotos nuevas: debajo de todo lo existente
+  let maxY = 0; Object.values(layout).forEach(p => maxY = Math.max(maxY, p.y + p.h));
+  const s = defaultSize(f), n = Object.keys(layout).length;
+  layout[f.file] = {x:(n % 6) * 384, y:maxY + 40, w:s.w, h:s.h, z:++z};
+}
+
+function render(){
+  world.innerHTML = "";
+  fotos.forEach(f => {
+    const p = layout[f.file];
+    const d = document.createElement("div");
+    d.className = "ph"; d.dataset.f = f.file;
+    d.innerHTML = `<img src="fotos/${encodeURIComponent(f.file)}" loading="lazy" alt=""><div class="cap">${f.name}</div><div class="rz"></div>`;
+    place(d, p); world.appendChild(d);
+  });
+  document.getElementById("count").textContent = fotos.length + " fotos";
+}
+function place(d, p){ d.style.cssText += `left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;z-index:${p.z}`; }
+
+function fit(){
+  const ps = Object.values(layout); if (!ps.length) return;
+  const x0 = Math.min(...ps.map(p=>p.x)), y0 = Math.min(...ps.map(p=>p.y));
+  const x1 = Math.max(...ps.map(p=>p.x+p.w)), y1 = Math.max(...ps.map(p=>p.y+p.h));
+  const W = view.clientWidth, H = view.clientHeight, m = 40;
+  cam.k = Math.min((W-2*m)/(x1-x0), (H-2*m)/(y1-y0), 1.5);
+  cam.x = m - x0*cam.k + (W-2*m-(x1-x0)*cam.k)/2; cam.y = m - y0*cam.k + (H-2*m-(y1-y0)*cam.k)/2;
+  applyCam();
+}
+
+// --- interacción ---
+let drag = null;
+view.addEventListener("pointerdown", e => {
+  const ph = e.target.closest(".ph");
+  view.setPointerCapture(e.pointerId);
+  if (ph) {
+    const f = ph.dataset.f, p = layout[f];
+    document.querySelectorAll(".ph.sel").forEach(n => n.classList.remove("sel")); ph.classList.add("sel");
+    p.z = ++z; ph.style.zIndex = p.z;
+    drag = {mode: e.target.classList.contains("rz") ? "rz" : "mv", ph, f, sx:e.clientX, sy:e.clientY, ox:p.x, oy:p.y, ow:p.w, oh:p.h};
+  } else {
+    document.querySelectorAll(".ph.sel").forEach(n => n.classList.remove("sel"));
+    drag = {mode:"pan", sx:e.clientX, sy:e.clientY, ox:cam.x, oy:cam.y}; view.classList.add("panning");
+  }
+});
+view.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+  if (drag.mode === "pan") { cam.x = drag.ox + dx; cam.y = drag.oy + dy; applyCam(); return; }
+  const p = layout[drag.f];
+  if (drag.mode === "mv") { p.x = Math.round(drag.ox + dx/cam.k); p.y = Math.round(drag.oy + dy/cam.k); }
+  else { const w = Math.max(80, drag.ow + dx/cam.k); p.w = Math.round(w); p.h = Math.round(w * drag.oh/drag.ow); }
+  drag.ph.style.left = p.x+"px"; drag.ph.style.top = p.y+"px"; drag.ph.style.width = p.w+"px"; drag.ph.style.height = p.h+"px";
+});
+const end = () => { if (drag && drag.mode !== "pan") save(); drag = null; view.classList.remove("panning"); };
+view.addEventListener("pointerup", end); view.addEventListener("pointercancel", end);
+
+view.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = view.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const nk = Math.min(4, Math.max(.05, cam.k * (e.deltaY < 0 ? 1.12 : 1/1.12)));
+  cam.x = mx - (mx - cam.x) * nk/cam.k; cam.y = my - (my - cam.y) * nk/cam.k; cam.k = nk; applyCam();
+}, {passive:false});
+
+view.addEventListener("dblclick", e => {
+  const ph = e.target.closest(".ph"); if (!ph) return;
+  lbImg.src = ph.querySelector("img").src; lbT.textContent = ph.dataset.f; lb.classList.add("on");
+});
+lb.addEventListener("click", () => lb.classList.remove("on"));
+addEventListener("keydown", e => { if (e.key === "Escape") lb.classList.remove("on"); });
+
+// --- botones ---
+function sorted(){
+  const by = document.getElementById("sSort").value;
+  return [...fotos].sort((a,b) => by === "date" ? (a.name.match(/\d{8,}/)||[a.name])[0].localeCompare((b.name.match(/\d{8,}/)||[b.name])[0]) || a.name.localeCompare(b.name) : a.name.localeCompare(b.name));
+}
+document.getElementById("bGrid").onclick = () => { gridLayout(sorted()); save(); render(); fit(); };
+document.getElementById("bFit").onclick = fit;
+document.getElementById("bReset").onclick = () => { if (confirm("¿Borrar el orden guardado y volver a la cuadrícula?")) { localStorage.removeItem(KEY); layout = {}; gridLayout(sorted()); render(); fit(); } };
+document.getElementById("bSave").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(layout, null, 1)], {type:"application/json"}));
+  a.download = "layout.json"; a.click();
+};
+document.getElementById("fImp").onchange = async e => {
+  const t = await e.target.files[0].text(); layout = JSON.parse(t);
+  fotos.forEach(f => { if (!layout[f.file]) placeNew(f); }); save(); render(); fit();
+};
+
+// --- arranque ---
+(async () => {
+  fotos = await (await fetch("fotos.json", {cache:"no-cache"})).json();
+  try { layout = JSON.parse(localStorage.getItem(KEY)) || null; } catch(e){ layout = null; }
+  if (!layout) { // layout.json del repo (orden compartido) o cuadrícula
+    try { const r = await fetch("layout.json", {cache:"no-cache"}); if (r.ok) layout = await r.json(); } catch(e){}
+  }
+  if (!layout) { layout = {}; gridLayout(sorted()); }
+  fotos.forEach(f => { if (!layout[f.file]) placeNew(f); });
+  z = Math.max(1, ...Object.values(layout).map(p => p.z || 1));
+  save(); render(); fit();
+})();
+addEventListener("resize", () => {});
+</script>
+</body>
+</html>
