@@ -32,6 +32,7 @@
   .ph .rz { position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize;
     background:linear-gradient(135deg,transparent 50%,var(--acc) 50%); opacity:0; }
   .ph:hover .rz, .ph.sel .rz { opacity:.9; }
+  #box { position:absolute; display:none; border:1px solid var(--acc); background:rgba(217,164,65,.12); pointer-events:none; z-index:50; }
   #lb { position:fixed; inset:0; z-index:2000; background:rgba(0,0,0,.93); display:none;
     align-items:center; justify-content:center; }
   #lb.on { display:flex; }
@@ -58,8 +59,8 @@
   <span class="sp"></span>
   <span id="count"></span>
 </div>
-<div id="view"><div id="world"></div></div>
-<div id="hint">Arrastra fotos · rueda o dos dedos: zoom · arrastra el fondo: mover vista · doble clic o toque: ver grande · esquina: cambiar tamaño</div>
+<div id="view"><div id="world"></div><div id="box"></div></div>
+<div id="hint">Arrastra fotos · rueda o dos dedos: zoom · arrastra el fondo: mover vista · Shift: seleccionar varias · doble clic o toque: ver grande · esquina: cambiar tamaño</div>
 <div id="lb"><button id="back">← Volver</button><img alt=""><div class="t"></div></div>
 
 <script>
@@ -100,7 +101,7 @@ function render(){
     d.innerHTML = `<img src="fotos/${encodeURIComponent(f.file)}" loading="lazy" alt=""><div class="cap">${f.name}</div><div class="rz"></div>`;
     place(d, p); world.appendChild(d);
   });
-  document.getElementById("count").textContent = fotos.length + " fotos";
+  document.getElementById("count").textContent = fotos.length + " fotos"; paintSel();
 }
 function place(d, p){ d.style.cssText += `left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;z-index:${p.z}`; }
 
@@ -118,6 +119,9 @@ function fit(){
 let drag = null, pinch = null;
 const ptrs = new Map();
 const dist2 = () => { const [a,b] = [...ptrs.values()]; return {d:Math.hypot(a.x-b.x, a.y-b.y) || 1, cx:(a.x+b.x)/2, cy:(a.y+b.y)/2}; };
+const selSet = new Set();
+const paintSel = () => document.querySelectorAll(".ph").forEach(n => n.classList.toggle("sel", selSet.has(n.dataset.f)));
+const box = document.getElementById("box");
 view.addEventListener("pointerdown", e => {
   const ph = e.target.closest(".ph");
   view.setPointerCapture(e.pointerId);
@@ -129,12 +133,23 @@ view.addEventListener("pointerdown", e => {
   }
   if (ptrs.size > 2) return;
   if (ph) {
-    const f = ph.dataset.f, p = layout[f];
-    document.querySelectorAll(".ph.sel").forEach(n => n.classList.remove("sel")); ph.classList.add("sel");
-    p.z = ++z; ph.style.zIndex = p.z;
-    drag = {mode: e.target.classList.contains("rz") ? "rz" : "mv", ph, f, sx:e.clientX, sy:e.clientY, ox:p.x, oy:p.y, ow:p.w, oh:p.h};
+    const f = ph.dataset.f, isRz = e.target.classList.contains("rz");
+    if (e.shiftKey) {                                   // Shift + clic: suma o quita de la selección
+      if (selSet.has(f)) { selSet.delete(f); paintSel(); drag = null; return; }
+      selSet.add(f);
+    } else if (!selSet.has(f) || isRz) { selSet.clear(); selSet.add(f); }
+    paintSel();
+    const starts = {};
+    selSet.forEach(k => { const p = layout[k]; p.z = ++z; starts[k] = {x:p.x, y:p.y}; });
+    document.querySelectorAll(".ph").forEach(n => { if (selSet.has(n.dataset.f)) n.style.zIndex = layout[n.dataset.f].z; });
+    const p = layout[f];
+    drag = {mode: isRz ? "rz" : "mv", f, starts, sx:e.clientX, sy:e.clientY, ow:p.w, oh:p.h};
+  } else if (e.shiftKey) {                              // Shift + arrastrar el fondo: rectángulo de selección
+    const r = view.getBoundingClientRect();
+    drag = {mode:"box", sx:e.clientX, sy:e.clientY, rx:r.left, ry:r.top, base:new Set(selSet)};
+    box.style.display = "block";
   } else {
-    document.querySelectorAll(".ph.sel").forEach(n => n.classList.remove("sel"));
+    selSet.clear(); paintSel();
     drag = {mode:"pan", sx:e.clientX, sy:e.clientY, ox:cam.x, oy:cam.y}; view.classList.add("panning");
   }
 });
@@ -149,17 +164,35 @@ view.addEventListener("pointermove", e => {
   if (!drag) return;
   const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
   if (drag.mode === "pan") { cam.x = drag.ox + dx; cam.y = drag.oy + dy; applyCam(); return; }
-  const p = layout[drag.f];
-  if (drag.mode === "mv") { p.x = Math.round(drag.ox + dx/cam.k); p.y = Math.round(drag.oy + dy/cam.k); }
-  else { const w = Math.max(80, drag.ow + dx/cam.k); p.w = Math.round(w); p.h = Math.round(w * drag.oh/drag.ow); }
-  drag.ph.style.left = p.x+"px"; drag.ph.style.top = p.y+"px"; drag.ph.style.width = p.w+"px"; drag.ph.style.height = p.h+"px";
+  if (drag.mode === "box") {
+    const x0 = Math.min(drag.sx, e.clientX) - drag.rx, y0 = Math.min(drag.sy, e.clientY) - drag.ry;
+    const w = Math.abs(dx), h = Math.abs(dy);
+    box.style.left = x0+"px"; box.style.top = y0+"px"; box.style.width = w+"px"; box.style.height = h+"px";
+    // rectángulo en coordenadas del tablero
+    const wx0 = (x0 - cam.x)/cam.k, wy0 = (y0 - cam.y)/cam.k, wx1 = (x0 + w - cam.x)/cam.k, wy1 = (y0 + h - cam.y)/cam.k;
+    selSet.clear(); drag.base.forEach(k => selSet.add(k));
+    fotos.forEach(f => { const p = layout[f.file]; if (p.x < wx1 && p.x + p.w > wx0 && p.y < wy1 && p.y + p.h > wy0) selSet.add(f.file); });
+    paintSel(); return;
+  }
+  const els = {}; document.querySelectorAll(".ph").forEach(n => els[n.dataset.f] = n);
+  if (drag.mode === "mv") {
+    for (const k in drag.starts) {
+      const p = layout[k], o = drag.starts[k], n = els[k];
+      p.x = Math.round(o.x + dx/cam.k); p.y = Math.round(o.y + dy/cam.k);
+      n.style.left = p.x+"px"; n.style.top = p.y+"px";
+    }
+  } else {
+    const p = layout[drag.f], w = Math.max(80, drag.ow + dx/cam.k); p.w = Math.round(w); p.h = Math.round(w * drag.oh/drag.ow);
+    const n = els[drag.f]; n.style.width = p.w+"px"; n.style.height = p.h+"px";
+  }
 });
 let lastTap = {f:null, t:0};
 const end = e => {
   if (e) { ptrs.delete(e.pointerId); if (pinch) { if (ptrs.size < 2) pinch = null; drag = null; view.classList.remove("panning"); return; } }
-  if (drag && drag.mode !== "pan") save();
+  if (drag && drag.mode === "box") box.style.display = "none";
+  if (drag && (drag.mode === "mv" || drag.mode === "rz")) save();
   // doble clic / doble toque detectado a mano (funciona en PC y en celular)
-  if (drag && drag.mode === "mv" && e && e.type === "pointerup" && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 6) {
+  if (drag && drag.mode === "mv" && e && e.type === "pointerup" && !e.shiftKey && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 6) {
     const now = Date.now();
     if (e.pointerType === "touch") openLb(drag.f);                       // celular: un toque abre la foto
     else if (lastTap.f === drag.f && now - lastTap.t < 450) { lastTap = {f:null, t:0}; openLb(drag.f); }  // PC: doble clic
@@ -198,7 +231,7 @@ addEventListener("popstate", () => {   // gesto/botón "atrás" del celular cier
 });
 // ESC en pantalla completa lo maneja el navegador: al salir, cerramos también el visor
 document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement) closeLb(); });
-addEventListener("keydown", e => { if (e.key === "Escape") closeLb(); });
+addEventListener("keydown", e => { if (e.key === "Escape") { if (lb.classList.contains("on")) closeLb(); else { selSet.clear(); paintSel(); } } });
 
 // --- botones ---
 function sorted(){
